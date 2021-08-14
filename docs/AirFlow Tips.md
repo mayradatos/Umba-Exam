@@ -5,17 +5,15 @@ https://airflow.apache.org/docs/apache-airflow/stable/docker-compose.yaml
 Agregar minio
 
 ```yaml
-  minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
-    ports:
-      - 9000:9000
-      - 9001:9001
-    volumes:
-      - ./S3:/data
+minio:
+  image: minio/minio
+  command: server /data --console-address ":9001"
+  ports:
+    - 9000:9000
+    - 9001:9001
+  volumes:
+    - ./S3:/data
 ```
-
-
 
 ## Como agregar dependencias de PIP
 
@@ -85,4 +83,3 @@ https://airflow.apache.org/docs/apache-airflow/stable/concepts/taskflow.html
 ## Hook S3
 
 https://airflow.apache.org/docs/apache-airflow-providers-amazon/stable/_api/airflow/providers/amazon/aws/hooks/s3/index.html#module-airflow.providers.amazon.aws.hooks.s3
-

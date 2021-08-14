@@ -6,17 +6,6 @@ import numpy as np
 
 
 @task
-def VisualAnalysis(dataPath):
-    """
-    #### Visual Analysis
-    Renders multiple graphs that help explore the data.
-    """
-    # ti = kwargs["ti"]
-    # dataPath = ti.xcom_pull(task_ids="Load", key="dataPath")
-    print(dataPath)
-
-
-@task
 def SimpleAnalysis(dataPath, **kwargs):
     """
     #### Simple Analysis
@@ -118,7 +107,86 @@ def CorrelationGrid(dataPath, **kwargs):
 
 
 def branch(**kwargs):
+    return "Model_RF"
     ti = kwargs["ti"]
-    dataPath = ti.xcom_pull(task_ids="PrepareData")
-    print("RECIBI: " + dataPath)
-    return "Model_1"
+    # Get key from the PrepareData task
+    X_train_key = ti.xcom_pull(task_ids="PrepareData", key="X_train")
+    Y_train_key = ti.xcom_pull(task_ids="PrepareData", key="y_train")
+
+    # Download from S3
+    s3 = S3Hook(aws_conn_id="custom_s3")
+    X_train_path = s3.download_file(key=X_train_key, bucket_name="dag-umba")
+    Y_train_path = s3.download_file(key=Y_train_key, bucket_name="dag-umba")
+
+    # Load Numpy arrays
+    X_train = np.load(X_train_path)
+    y_train = np.load(Y_train_path)
+
+    from sklearn.model_selection import (
+        KFold,
+        cross_val_score,
+    )  # to split the data
+
+    from sklearn.metrics import (
+        accuracy_score,
+        confusion_matrix,
+        classification_report,
+        fbeta_score,
+        recall_score,
+    )  # To evaluate our model
+
+    from sklearn.model_selection import GridSearchCV
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.neighbors import KNeighborsClassifier
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    from sklearn.naive_bayes import GaussianNB
+    from sklearn.svm import SVC
+    from xgboost import XGBClassifier
+
+    models = []
+    models.append(("LR", LogisticRegression()))
+    models.append(("LDA", LinearDiscriminantAnalysis()))
+    models.append(("KNN", KNeighborsClassifier()))
+    models.append(("CART", DecisionTreeClassifier()))
+    models.append(("NB", GaussianNB()))
+    models.append(("RF", RandomForestClassifier()))
+    models.append(("SVM", SVC(gamma="auto")))
+    models.append(("XGB", XGBClassifier()))
+
+    # Evaluate each model in turn
+    results = {}
+    names = []
+    scoring = "recall"
+
+    for name, model in models:
+        kfold = KFold(n_splits=10)
+        cv_results = cross_val_score(model, X_train, y_train, cv=kfold, scoring=scoring)
+        results[name] = cv_results
+        names.append(name)
+        msg = "%s: %f (%f)" % (name, cv_results.mean(), cv_results.std())
+        print(msg)
+
+    ## Remove models which are not implemented
+    best = {"name": "", "score": 0}
+    notImplemented = ["LR", "LDA", "KNN", "CART", "SVM"]
+    list(map(results.pop, notImplemented))
+    for name, result in results.items():
+        currentScore = result.mean() - result.std()
+        if currentScore > best["score"]:
+            best["score"] = currentScore
+            best["name"] = name
+
+    # TODO: Upload boxplot to S3
+    # boxplot algorithm comparison
+    # fig = plt.figure(figsize=(11, 6))
+    # fig.suptitle("Algorithm Comparison")
+    # ax = fig.add_subplot(111)
+    # plt.boxplot(results)
+    # ax.set_xticklabels(names)
+    # plt.show()  ##graficar en airflow :)
+
+    # return "Model_" + best["name"]
+    return "Model_RF"

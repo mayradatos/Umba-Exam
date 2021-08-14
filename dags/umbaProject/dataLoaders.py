@@ -2,6 +2,7 @@ from airflow.decorators import task
 from airflow.hooks.S3_hook import S3Hook
 
 import pandas as pd
+import numpy as np
 
 
 @task()
@@ -34,12 +35,14 @@ def DataLoad(**kwargs):
     return uploadKey
 
 
-@task()
+@task(multiple_outputs=True)
 def PrepareData(**kwargs):
     """
     #### Prepare Data
     A task which prepares the data for all ML models.
     """
+    from sklearn.model_selection import train_test_split
+
     s3 = S3Hook(aws_conn_id="custom_s3")
     ds = kwargs["execution_date"].strftime("%Y-%m-%d-%H-%M-%S")
     downloadPath = s3.download_file(
@@ -94,4 +97,55 @@ def PrepareData(**kwargs):
         filename="german_credit_data_PD.csv",
         replace=True,
     )
-    return uploadKey
+
+    # Creating the X and y variables
+    df_credit["Credit amount"] = np.log(df_credit["Credit amount"])
+    X = df_credit.drop("Risk_bad", 1).values
+    y = df_credit["Risk_bad"].values
+
+    # Spliting X and y into train and test version
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, random_state=42
+    )
+
+    ## Upload training splits to S3
+    X_train_key = ds + "/trainingData/X_train.npy"
+    np.save("X_train.npy", X_train)
+    s3.load_file(
+        bucket_name="dag-umba",
+        key=X_train_key,
+        filename="X_train.npy",
+        replace=True,
+    )
+    y_train_key = ds + "/trainingData/y_train.npy"
+    np.save("Y_train.npy", y_train)
+    s3.load_file(
+        bucket_name="dag-umba",
+        key=y_train_key,
+        filename="Y_train.npy",
+        replace=True,
+    )
+    X_test_key = ds + "/trainingData/X_test.npy"
+    np.save("X_test.npy", X_test)
+    s3.load_file(
+        bucket_name="dag-umba",
+        key=X_test_key,
+        filename="X_test.npy",
+        replace=True,
+    )
+    y_test_key = ds + "/trainingData/y_test.npy"
+    np.save("Y_test.npy", y_test)
+    s3.load_file(
+        bucket_name="dag-umba",
+        key=y_test_key,
+        filename="Y_test.npy",
+        replace=True,
+    )
+
+    return {
+        "dataKey": uploadKey,
+        "X_train": X_train_key,
+        "X_test": X_test_key,
+        "y_train": y_train_key,
+        "y_test": y_test_key,
+    }
