@@ -1,3 +1,4 @@
+from pandas.io.parsers import read_csv
 from airflow.decorators import task
 from airflow.hooks.S3_hook import S3Hook
 
@@ -107,7 +108,7 @@ def CorrelationGrid(dataPath, **kwargs):
 
 
 def branch(**kwargs):
-    return "Model_RF"
+    return "Model_XGB"
     ti = kwargs["ti"]
     # Get key from the PrepareData task
     X_train_key = ti.xcom_pull(task_ids="PrepareData", key="X_train")
@@ -179,14 +180,120 @@ def branch(**kwargs):
             best["score"] = currentScore
             best["name"] = name
 
-    # TODO: Upload boxplot to S3
-    # boxplot algorithm comparison
-    # fig = plt.figure(figsize=(11, 6))
-    # fig.suptitle("Algorithm Comparison")
-    # ax = fig.add_subplot(111)
-    # plt.boxplot(results)
-    # ax.set_xticklabels(names)
-    # plt.show()  ##graficar en airflow :)
+    # Generate Boxplot comparing models
+    fig = plt.figure(figsize=(11, 6))
+    fig.suptitle("Algorithm Comparison")
+    ax = fig.add_subplot(111)
+    plt.boxplot(results)
+    ax.set_xticklabels(names)
+    plt.savefig("algorithm_comparison.png")
+    # Upload to S3
+    ds = kwargs["execution_date"].strftime("%Y-%m-%d-%H-%M-%S")
+    s3.load_file(
+        bucket_name="dag-umba",
+        key=ds + "/algorithm_comparison.png",
+        filename="algorithm_comparison.png",
+        replace=True,
+    )
 
-    # return "Model_" + best["name"]
-    return "Model_RF"
+    return "Model_" + best["name"]
+
+
+# Create Final node which depends on any one of the models not failing
+@task(trigger_rule="none_failed")
+def WriteOutput(**kwargs):
+    from sklearn.metrics import (
+        accuracy_score,
+        confusion_matrix,
+        classification_report,
+        fbeta_score,
+        recall_score,
+    )  # To evaluate our model
+
+    s3 = S3Hook(aws_conn_id="custom_s3")
+
+    ti = kwargs["ti"]
+    y_test_key = ti.xcom_pull(task_ids="PrepareData", key="y_test")
+    cleanDataKey = ti.xcom_pull(task_ids="PrepareData", key="dataKey")
+    pipelineResult = ti.xcom_pull(task_ids="Custom_Pipeline")
+    selectedModel = ti.xcom_pull(task_ids="SelectModel")
+    modelResults = ti.xcom_pull(task_ids=selectedModel)
+    X_test_key = ti.xcom_pull(task_ids="PrepareData", key="X_test")
+
+    X_test_path = s3.download_file(key=X_test_key, bucket_name="dag-umba")
+    X_test = np.load(X_test_path)
+
+    print("Received:" + str(modelResults))
+    print("Pipeline Result:" + str(pipelineResult))
+
+    y_pred_pipeline_path = s3.download_file(
+        bucket_name="dag-umba",
+        key=pipelineResult["y_pred"],
+    )
+    y_pred_pipeline = np.load(y_pred_pipeline_path)
+
+    y_pred_model_path = s3.download_file(
+        bucket_name="dag-umba",
+        key=modelResults["y_pred"],
+    )
+    y_pred_model = np.load(y_pred_model_path)
+
+    y_test_path = s3.download_file(
+        bucket_name="dag-umba",
+        key=y_test_key,
+    )
+    y_test = np.load(y_test_path)
+
+    # Evaluate the model using fbeta_score with beta of 1
+    modelScore = fbeta_score(y_test, y_pred_model, beta=1)
+    pipelineScore = fbeta_score(y_test, y_pred_pipeline, beta=1)
+
+    print("Model Score:" + str(modelScore))
+    print("Pipeline Score:" + str(pipelineScore))
+    # Get Y_pred from best model
+    best_y_pred = y_pred_pipeline if pipelineScore > modelScore else y_pred_model
+    # Delete ROC from S3 of worse model
+    s3.delete_object(
+        Bucket="dag-umba",
+        Key=modelResults["roc_curve"]
+        if modelScore < pipelineScore
+        else pipelineResult["roc_curve"],
+    )
+    # Download data to populate headers
+    cleanData_path = s3.download_file(key=cleanDataKey, bucket_name="dag-umba")
+    cleanData = pd.read_csv(cleanData_path).drop("Risk_bad", 1)
+    # Add a column to X_test with the predicted probability and convert to dataframe
+    df = pd.DataFrame(np.hstack((X_test, best_y_pred[:, None])))
+    # Save to S3
+    header = list(cleanData.columns)
+    header.append("Predicted_Risk_Bad")
+    df.to_csv("FinalOutput.csv", index=True, header=header)
+    ds = kwargs["execution_date"].strftime("%Y-%m-%d-%H-%M-%S")
+    s3.load_file(
+        bucket_name="dag-umba",
+        key=ds + "/FinalOutput.csv",
+        filename="FinalOutput.csv",
+        replace=True,
+    )
+    with open("FinalOutput.txt", "w", encoding="utf-8") as f:
+        f.write("Accuracy Score:\n")
+        f.write(str(accuracy_score(y_test, best_y_pred)))
+        f.write("\nConfusion matrix:\n")
+        f.write(str(confusion_matrix(y_test, best_y_pred)))
+        f.write("\nBeta Score:\n")
+        f.write(str(pipelineScore) if pipelineScore > modelScore else str(modelScore))
+        f.write("\nClassification Report:\n")
+        f.write(str(classification_report(y_test, best_y_pred)))
+        f.write("\nRecall Score:\n")
+        f.write(str(recall_score(y_test, best_y_pred)))
+        f.write(modelResults["details"])
+        f.write("\n\n")
+
+    s3.load_file(
+        bucket_name="dag-umba",
+        key=ds + "/FinalOutput.txt",
+        filename="FinalOutput.txt",
+        replace=True,
+    )
+
+    # Write ROC

@@ -1,7 +1,8 @@
 logs/*
-dags/__pycache__/
 S3/*
+dags/__pycache__/
 !S3/.gitkeep
+!logs/.gitkeep
 
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python

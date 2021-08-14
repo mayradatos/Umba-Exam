@@ -1,41 +1,105 @@
 from airflow.decorators import task
 from airflow.hooks.S3_hook import S3Hook
-
-import pandas as pd
-
-
-@task
-def Model_NB():
-    print("NB Model")
-    return {
-        "model": "Naive Bayes",
-        "precision": 0.5,
-        "recall": 0.5,
-    }
+from sklearn.metrics import roc_curve
+import numpy as np
+import matplotlib.pyplot as plt
 
 
-@task
-def Model_RF(**kwargs):
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import GridSearchCV
-    import numpy as np
+@task(multiple_outputs=True)
+def Model_NB(**kwargs):
+    from sklearn.naive_bayes import GaussianNB
 
     ti = kwargs["ti"]
     # Get key from the PrepareData task
     X_train_key = ti.xcom_pull(task_ids="PrepareData", key="X_train")
     Y_train_key = ti.xcom_pull(task_ids="PrepareData", key="y_train")
     X_test_key = ti.xcom_pull(task_ids="PrepareData", key="X_test")
+    Y_test_key = ti.xcom_pull(task_ids="PrepareData", key="y_test")
 
     # Download from S3
     s3 = S3Hook(aws_conn_id="custom_s3")
     X_train_path = s3.download_file(key=X_train_key, bucket_name="dag-umba")
     Y_train_path = s3.download_file(key=Y_train_key, bucket_name="dag-umba")
     X_test_path = s3.download_file(key=X_test_key, bucket_name="dag-umba")
+    Y_test_path = s3.download_file(key=Y_test_key, bucket_name="dag-umba")
 
     # Load Numpy arrays
     X_train = np.load(X_train_path)
     y_train = np.load(Y_train_path)
     X_test = np.load(X_test_path)
+    y_test = np.load(Y_test_path)
+
+    # Criando o classificador logreg
+    GNB = GaussianNB()
+
+    # Fitting with train data
+    model = GNB.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    # Roc Curve it could be a new module
+    y_pred_prob = model.predict_proba(X_test)[:, 1]
+    # Generate ROC curve values: fpr, tpr, thresholds
+    fpr, tpr, thresholds = roc_curve(y_test, y_pred_prob)
+
+    # Plot ROC curve
+    plt.plot([0, 1], [0, 1], "k--")
+    plt.plot(fpr, tpr)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.savefig("roc_curve.png")
+    plt.close()
+
+    # Upload ROC curve to S3
+    ds = kwargs["execution_date"].strftime("%Y-%m-%d-%H-%M-%S")
+    curveKey = ds + "/roc_curve_model_nb.png"
+    s3.load_file(
+        filename="roc_curve.png",
+        key=curveKey,
+        bucket_name="dag-umba",
+        replace=True,
+    )
+
+    # Upload y_pred to S3
+    y_pred_key = ds + "/trainingData/y_pred_model_nb.npy"
+    np.save("y_pred_model_nb.npy", y_pred)
+    s3.load_file(
+        filename="y_pred_model_nb.npy",
+        key=y_pred_key,
+        bucket_name="dag-umba",
+        replace=True,
+    )
+
+    return {
+        "y_pred": y_pred_key,
+        "roc_curve": curveKey,
+        "details": "Model Score: {}".format(model.score(X_train, y_train)),
+    }
+
+
+@task(multiple_outputs=True)
+def Model_RF(**kwargs):
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import GridSearchCV
+
+    ti = kwargs["ti"]
+    # Get key from the PrepareData task
+    X_train_key = ti.xcom_pull(task_ids="PrepareData", key="X_train")
+    Y_train_key = ti.xcom_pull(task_ids="PrepareData", key="y_train")
+    X_test_key = ti.xcom_pull(task_ids="PrepareData", key="X_test")
+    Y_test_key = ti.xcom_pull(task_ids="PrepareData", key="y_test")
+
+    # Download from S3
+    s3 = S3Hook(aws_conn_id="custom_s3")
+    X_train_path = s3.download_file(key=X_train_key, bucket_name="dag-umba")
+    Y_train_path = s3.download_file(key=Y_train_key, bucket_name="dag-umba")
+    X_test_path = s3.download_file(key=X_test_key, bucket_name="dag-umba")
+    Y_test_path = s3.download_file(key=Y_test_key, bucket_name="dag-umba")
+
+    # Load Numpy arrays
+    X_train = np.load(X_train_path)
+    y_train = np.load(Y_train_path)
+    X_test = np.load(X_test_path)
+    y_test = np.load(Y_test_path)
 
     # Seting the Hyper Parameters
     param_grid = {
@@ -64,57 +128,217 @@ def Model_RF(**kwargs):
     # Testing the model
     # Predicting using our  model
     y_pred = rf.predict(X_test)
+    # Roc Curve it could be a new module
+    y_pred_prob = model.predict_proba(X_test)[:, 1]
+    # Generate ROC curve values: fpr, tpr, thresholds
+    fpr, tpr, thresholds = roc_curve(y_test, y_pred_prob)
 
+    # Plot ROC curve
+    plt.plot([0, 1], [0, 1], "k--")
+    plt.plot(fpr, tpr)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.savefig("roc_curve.png")
+    plt.close()
+
+    # Upload ROC curve to S3
     ds = kwargs["execution_date"].strftime("%Y-%m-%d-%H-%M-%S")
-    key = ds + "/trainingData/y_pred.npy"
-    np.save("y_pred.npy", y_pred)
+    curveKey = ds + "/roc_curve_model_rf.png"
     s3.load_file(
-        filename="y_pred.npy",
-        key=key,
+        filename="roc_curve.png",
+        key=curveKey,
         bucket_name="dag-umba",
         replace=True,
     )
-    # with open("archivoprueba2.txt", "a", encoding="utf-8") as f:
-    #     f.write("Best Score generated by a Grid \n ")
-    #     f.write(str(grid_search.best_score_))
-    #     f.write("\n Parameters of the Best calculated Grid \n ")
-    #     print(grid_search.best_params_, file=f)
-    #     f.write("\n \n Accuracy Score \n ")
-    #     f.write(str(accuracy_score(y_test, y_pred)))
-    #     f.write("\n \n confusion matrix \n ")
-    #     f.write(str(confusion_matrix(y_test, y_pred)))
-    #     f.write("\n \n beta score \n ")
-    #     f.write(str(fbeta_score(y_test, y_pred, beta=2)))
-
-    # df = pd.DataFrame(y_pred, columns=["Prediction"])
-    # df.to_csv(r"Paths3/RandomForest", index=False)
+    # Upload y_pred to S3
+    y_pred_key = ds + "/trainingData/y_pred_model_rf.npy"
+    np.save("y_pred_model_rf.npy", y_pred)
+    s3.load_file(
+        filename="y_pred_model_rf.npy",
+        key=y_pred_key,
+        bucket_name="dag-umba",
+        replace=True,
+    )
 
     return {
-        "return_value": key,
+        "y_pred": y_pred_key,
+        "roc_curve": curveKey,
         "details": "Best Score generated by Grid Search: {}\nParameters of the Best calculated Grid: {}".format(
             grid_search.best_score_, grid_search.best_params_
         ),
     }
 
 
-@task
-def Model_XGB():
-    print("XGB Model")
+@task(multiple_outputs=True)
+def Model_XGB(**kwargs):
+    from sklearn.model_selection import GridSearchCV
+    from xgboost import XGBClassifier
+
+    ti = kwargs["ti"]
+    # Get key from the PrepareData task
+    X_train_key = ti.xcom_pull(task_ids="PrepareData", key="X_train")
+    Y_train_key = ti.xcom_pull(task_ids="PrepareData", key="y_train")
+    X_test_key = ti.xcom_pull(task_ids="PrepareData", key="X_test")
+    Y_test_key = ti.xcom_pull(task_ids="PrepareData", key="y_test")
+
+    # Download from S3
+    s3 = S3Hook(aws_conn_id="custom_s3")
+    X_train_path = s3.download_file(key=X_train_key, bucket_name="dag-umba")
+    Y_train_path = s3.download_file(key=Y_train_key, bucket_name="dag-umba")
+    X_test_path = s3.download_file(key=X_test_key, bucket_name="dag-umba")
+    Y_test_path = s3.download_file(key=Y_test_key, bucket_name="dag-umba")
+
+    # Load Numpy arrays
+    X_train = np.load(X_train_path)
+    y_train = np.load(Y_train_path)
+    X_test = np.load(X_test_path)
+    y_test = np.load(Y_test_path)
+
+    # Seting the Hyper Parameters
+    param_test1 = {
+        "max_depth": [3, 5, 6, 10],
+        "min_child_weight": [3, 5, 10],
+        "gamma": [0.0, 0.1, 0.2, 0.3, 0.4],
+        # 'reg_alpha':[1e-5, 1e-2, 0.1, 1, 10],
+        "subsample": [i / 100.0 for i in range(75, 90, 5)],
+        "colsample_bytree": [i / 100.0 for i in range(75, 90, 5)],
+    }
+
+    # Creating the classifier
+    model_xg = XGBClassifier(random_state=2)
+
+    grid_search = GridSearchCV(model_xg, param_grid=param_test1, cv=5, scoring="recall")
+    grid_search.fit(X_train, y_train)
+    y_pred = grid_search.predict(X_test)
+    # Roc Curve it could be a new module
+    y_pred_prob = grid_search.predict_proba(X_test)[:, 1]
+    # Generate ROC curve values: fpr, tpr, thresholds
+    fpr, tpr, thresholds = roc_curve(y_test, y_pred_prob)
+
+    # Plot ROC curve
+    plt.plot([0, 1], [0, 1], "k--")
+    plt.plot(fpr, tpr)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.savefig("roc_curve.png")
+    plt.close()
+
+    # Upload ROC curve to S3
+    ds = kwargs["execution_date"].strftime("%Y-%m-%d-%H-%M-%S")
+    curveKey = ds + "/roc_curve_model_xgb.png"
+    s3.load_file(
+        filename="roc_curve.png",
+        key=curveKey,
+        bucket_name="dag-umba",
+        replace=True,
+    )
+
+    # Upload y_pred to S3
+    y_pred_key = ds + "/trainingData/y_pred_model_xgb.npy"
+    np.save("y_pred_model_xgb.npy", y_pred)
+    s3.load_file(
+        filename="y_pred_model_xgb.npy",
+        key=y_pred_key,
+        bucket_name="dag-umba",
+        replace=True,
+    )
+
     return {
-        "model": "Naive Bayes",
-        "precision": 0.5,
-        "recall": 0.5,
+        "y_pred": y_pred_key,
+        "roc_curve": curveKey,
+        "details": "Best Score generated by Grid Search: {}\nParameters of the Best calculated Grid: {}".format(
+            grid_search.best_score_, grid_search.best_params_
+        ),
     }
 
 
-@task
-def Custom_Pipeline(dataPath):
+@task(multiple_outputs=True)
+def Custom_Pipeline(**kwargs):
+    """
+    ## Custom Pipeline Node
+    This node is used to execute a custom pipeline.
+    Uses GaussianNB as baseline model along with some tuning with PCA and KBest.
+    """
+    from sklearn.pipeline import Pipeline
+    from sklearn.pipeline import FeatureUnion
+    from sklearn.decomposition import PCA
+    from sklearn.feature_selection import SelectKBest
+    from sklearn.naive_bayes import GaussianNB
+
+    ti = kwargs["ti"]
+    # Get key from the PrepareData task
+    X_train_key = ti.xcom_pull(task_ids="PrepareData", key="X_train")
+    Y_train_key = ti.xcom_pull(task_ids="PrepareData", key="y_train")
+    X_test_key = ti.xcom_pull(task_ids="PrepareData", key="X_test")
+    Y_test_key = ti.xcom_pull(task_ids="PrepareData", key="y_test")
+
+    # Download from S3
     s3 = S3Hook(aws_conn_id="custom_s3")
-    downloadPath = s3.download_file(key=dataPath, bucket_name="dag-umba")
-    df_credit = pd.read_csv(downloadPath, index_col=0)
-    print("Pipeline Model")
+    X_train_path = s3.download_file(key=X_train_key, bucket_name="dag-umba")
+    Y_train_path = s3.download_file(key=Y_train_key, bucket_name="dag-umba")
+    X_test_path = s3.download_file(key=X_test_key, bucket_name="dag-umba")
+    Y_test_path = s3.download_file(key=Y_test_key, bucket_name="dag-umba")
+
+    # Load Numpy arrays
+    X_train = np.load(X_train_path)
+    y_train = np.load(Y_train_path)
+    X_test = np.load(X_test_path)
+    y_test = np.load(Y_test_path)
+
+    features = []
+    features.append(("pca", PCA(n_components=2)))
+    features.append(("select_best", SelectKBest(k=6)))
+    feature_union = FeatureUnion(features)
+    # create pipeline
+    estimators = []
+    estimators.append(("feature_union", feature_union))
+    estimators.append(("logistic", GaussianNB()))
+    model = Pipeline(estimators)
+    # evaluate pipeline
+    # seed = 7
+    # kfold = KFold(n_splits=10)
+    # results = cross_val_score(model, X_train, y_train, cv=kfold)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    # Roc Curve it could be a new module
+    y_pred_prob = model.predict_proba(X_test)[:, 1]
+    # Generate ROC curve values: fpr, tpr, thresholds
+    fpr, tpr, thresholds = roc_curve(y_test, y_pred_prob)
+
+    # Plot ROC curve
+    plt.plot([0, 1], [0, 1], "k--")
+    plt.plot(fpr, tpr)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.savefig("roc_curve.png")
+    plt.close()
+
+    # Upload ROC curve to S3
+    ds = kwargs["execution_date"].strftime("%Y-%m-%d-%H-%M-%S")
+    curveKey = ds + "/roc_curve_pipeline.png"
+    s3.load_file(
+        filename="roc_curve.png",
+        key=curveKey,
+        bucket_name="dag-umba",
+        replace=True,
+    )
+
+    # Upload y_pred to S3
+    y_pred_key = ds + "/trainingData/y_pred_pipeline.npy"
+    np.save("y_pred_pipeline.npy", y_pred)
+    s3.load_file(
+        filename="y_pred_pipeline.npy",
+        key=y_pred_key,
+        bucket_name="dag-umba",
+        replace=True,
+    )
+
     return {
-        "model": "Custom Pipeline",
-        "precision": 0.5,
-        "recall": 0.5,
+        "y_pred": y_pred_key,
+        "roc_curve": curveKey,
+        "details": "Model Score: {}".format(model.score(X_train, y_train)),
     }

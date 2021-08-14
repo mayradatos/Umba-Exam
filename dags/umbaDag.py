@@ -1,24 +1,11 @@
 from textwrap import dedent
 
-# from airflow import DAG
 from airflow.utils.dates import days_ago
-from airflow.hooks.S3_hook import S3Hook
-from airflow.decorators import dag, task
+from airflow.decorators import dag
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
-from airflow.operators.dummy_operator import DummyOperator
-
-from pprint import pprint
 
 # Import Custom Tasks
 from umbaProject import tasks, dataLoaders, models, graphs
-from umbaProject.models import *
-
-# Common Libaries
-import pandas as pd  # To work with dataset
-
-# import numpy as np  # Math library
-# import seaborn as sns  # Graph library that use matplot in background
-# import matplotlib.pyplot as plt  # to plot some parameters in seaborn
 
 default_args = {
     "owner": "Mayra Patricia",
@@ -82,9 +69,9 @@ def UmbaExam():
     modelDict = {}
 
     # Add implemented models to dictionary
-    modelDict["NB"] = Model_NB()
-    modelDict["RF"] = Model_RF()
-    modelDict["XGB"] = Model_XGB()
+    modelDict["NB"] = models.Model_NB()
+    modelDict["RF"] = models.Model_RF()
+    modelDict["XGB"] = models.Model_XGB()
 
     # Create Dummy Model task for all other models
     def dummyModel(**kwargs):
@@ -95,19 +82,8 @@ def UmbaExam():
             "recall": 0.5,
         }
 
-    # Create Final node which depends on any one of the models not failing
-    @task(trigger_rule="none_failed")
-    def WriteOutput(**kwargs):
-        ti = kwargs["ti"]
-        pipelineResult = ti.xcom_pull(task_ids="Custom_Pipeline")
-        selectedModel = ti.xcom_pull(task_ids="SelectModel")
-        results = ti.xcom_pull(task_ids=selectedModel)
-        print("Received:" + str(results))
-        print("Pipeline Result:" + str(pipelineResult))
-
     # Add models both real and dummy to dependency graph
-    finalNode = WriteOutput()
-    #  TODO: Cambiar por lista dinameica de nombres
+    finalNode = tasks.WriteOutput()
     for modelName in ["LR", "LDA", "KNN", "CART", "NB", "RF", "SVM", "XGB"]:
         if modelName not in modelDict:
             modelDict[modelName] = PythonOperator(
@@ -116,7 +92,7 @@ def UmbaExam():
         modelSelection >> modelDict[modelName] >> finalNode
 
     # Custom model pipeline will be executed concurrent to model selection
-    cleanData >> Custom_Pipeline(cleanData["dataKey"]) >> finalNode
+    cleanData >> models.Custom_Pipeline() >> finalNode
 
 
 UmbaExam = UmbaExam()
