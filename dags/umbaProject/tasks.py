@@ -4,6 +4,7 @@ from airflow.hooks.S3_hook import S3Hook
 
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 @task
@@ -108,7 +109,6 @@ def CorrelationGrid(dataPath, **kwargs):
 
 
 def branch(**kwargs):
-    return "Model_XGB"
     ti = kwargs["ti"]
     # Get key from the PrepareData task
     X_train_key = ti.xcom_pull(task_ids="PrepareData", key="X_train")
@@ -127,14 +127,6 @@ def branch(**kwargs):
         KFold,
         cross_val_score,
     )  # to split the data
-
-    from sklearn.metrics import (
-        accuracy_score,
-        confusion_matrix,
-        classification_report,
-        fbeta_score,
-        recall_score,
-    )  # To evaluate our model
 
     from sklearn.model_selection import GridSearchCV
     from sklearn.ensemble import RandomForestClassifier
@@ -253,9 +245,9 @@ def WriteOutput(**kwargs):
     # Get Y_pred from best model
     best_y_pred = y_pred_pipeline if pipelineScore > modelScore else y_pred_model
     # Delete ROC from S3 of worse model
-    s3.delete_object(
-        Bucket="dag-umba",
-        Key=modelResults["roc_curve"]
+    s3.delete_objects(
+        bucket="dag-umba",
+        keys=modelResults["roc_curve"]
         if modelScore < pipelineScore
         else pipelineResult["roc_curve"],
     )

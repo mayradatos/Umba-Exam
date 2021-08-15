@@ -3,6 +3,7 @@ S3/*
 dags/__pycache__/
 !S3/.gitkeep
 !logs/.gitkeep
+*.pdf
 
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
